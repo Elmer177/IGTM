@@ -1,0 +1,15 @@
+# 提供データ（13GB・再配布しない）
+kenpro 2/
+
+# ビルド成果物
+src/build_full
+src/build_sigm
+src/hnsw
+src/hnsw_merge
+*.o
+
+# OS・エディタ・Python のキャッシュ
+.DS_Store
+.vscode/
+__pycache__/
+*.pyc

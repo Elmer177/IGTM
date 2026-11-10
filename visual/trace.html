@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HNSW 構築トレース</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  /* layout: index.html と同じ2カラム。左に実データを2次元に写したキャンバス、右に再生操作と計測 */
+  --bg:#f3f4f7; --surface:#ffffff; --ink:#1b2130; --muted:#5b6476; --line:#d8dce4;
+  --a:#2d66d4; --b:#d9602f; --hit:#cf8a0a; --seed:#11907a; --trail:#7448cc; --cut:#c2263a;
+  --font-body:"Noto Sans JP",system-ui,-apple-system,"Hiragino Sans","Yu Gothic",sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#10131a; --surface:#181d27; --ink:#e5e8ee; --muted:#98a1b3; --line:#2b3240;
+    --a:#6f9dff; --b:#ff8b5e; --hit:#f0b23a; --seed:#3ccaa9; --trail:#ac8bff; --cut:#ff6b7f; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#10131a; --surface:#181d27; --ink:#e5e8ee; --muted:#98a1b3; --line:#2b3240;
+  --a:#6f9dff; --b:#ff8b5e; --hit:#f0b23a; --seed:#3ccaa9; --trail:#ac8bff; --cut:#ff6b7f; color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--font-body);font-size:14px;line-height:1.6}
+.wrap{max-width:1240px;margin:0 auto;padding:20px 16px 48px;display:grid;gap:14px}
+header h1{font-size:22px;margin:0;font-weight:700;text-wrap:balance}
+header p{margin:4px 0 0;color:var(--muted);max-width:80ch}
+header a{color:var(--a)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.loadbar{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.tchip{display:inline-flex;gap:8px;align-items:center;border:1px solid var(--line);border-radius:8px;padding:4px 10px;background:var(--surface);cursor:pointer;font:inherit;font-size:13px;color:var(--ink)}
+.tchip small{color:var(--muted);font-size:11.5px}
+.tchip[aria-pressed="true"]{border-color:var(--ink);box-shadow:inset 0 0 0 1px var(--ink)}
+.file{font-size:12px;color:var(--muted)}
+.warn{color:var(--cut);font-size:12.5px;margin:6px 0 0}
+.ok{color:var(--seed);font-size:12.5px}
+button{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:6px;padding:5px 11px;cursor:pointer}
+button:hover{border-color:var(--muted)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--a);outline-offset:2px}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);overflow-x:auto}
+.tabs button{border:none;border-bottom:2px solid transparent;border-radius:0;background:none;padding:8px 14px;color:var(--muted);white-space:nowrap}
+.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--ink);font-weight:500}
+.work{display:grid;grid-template-columns:minmax(0,1fr) 370px;gap:14px;align-items:start}
+@media (max-width:900px){.work{grid-template-columns:1fr}}
+.stage{display:grid;gap:8px;min-width:0}
+.layerbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--muted);min-height:28px}
+.chip{padding:2px 11px;border-radius:999px;font-size:12px;font-family:var(--font-mono)}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--surface);border-color:var(--ink)}
+canvas#cv{width:100%;max-width:760px;display:block;border-radius:8px;background:var(--surface);border:1px solid var(--line)}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:11px;height:11px;display:inline-block;border-radius:50%;flex:none}
+.sw.sq{border-radius:2px}
+.sw.ring{background:transparent!important;border:2px solid}
+.sw.ln{height:3px;width:16px;border-radius:2px}
+.sw.dash{height:0;width:16px;border-top:2px dashed;border-radius:0;background:transparent!important}
+aside{display:grid;gap:12px;min-width:0;grid-template-columns:minmax(0,1fr)}
+aside>section{min-width:0}
+aside h2{font-size:14px;margin:0 0 6px;font-weight:700}
+.help{font-size:12.5px;color:var(--muted);margin:0 0 8px}
+.row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.timeline{display:grid;gap:4px;margin:6px 0 8px}
+.timeline input{width:100%}
+.phasebar{display:flex;height:6px;border-radius:3px;overflow:hidden}
+.phasebar i{display:block;height:100%}
+.tl-labels{display:flex;justify-content:space-between;font-size:11.5px;color:var(--muted);font-family:var(--font-mono)}
+.speed{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);margin-top:6px}
+.speed input{flex:1}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:13px;margin:0}
+.kv dt{color:var(--muted)}
+.kv dd{margin:0;text-align:right;font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.tablewrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th,td{padding:5px 6px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th{font-weight:500;color:var(--muted);font-size:12px}
+th:first-child,td:first-child{text-align:left}
+td.num,td .num{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+tr.cur td{background:color-mix(in srgb,var(--hit) 14%,transparent)}
+.pill{display:inline-block;font-size:11px;padding:0 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+canvas.mini{width:100%;height:150px;display:block}
+.empty{padding:24px;color:var(--muted);font-size:13.5px;line-height:1.8}
+.empty code,.help code{font-family:var(--font-mono);font-size:12px;background:var(--bg);padding:1px 5px;border-radius:4px}
+[hidden]{display:none!important}
+.now{font-size:15px;line-height:1.75;margin:0}
+.now b{font-weight:700}
+.stages{list-style:none;margin:10px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
+.stages button{font-size:12px;padding:3px 9px;border-radius:999px;color:var(--muted)}
+.stages button[aria-current="step"]{background:var(--ink);color:var(--surface);border-color:var(--ink)}
+.stages button.done{color:var(--ink)}
+details.card>summary{cursor:pointer;font-weight:700;font-size:14px;list-style:none;display:flex;justify-content:space-between;align-items:center}
+details.card>summary::-webkit-details-marker{display:none}
+details.card>summary::after{content:"開く";font-weight:400;font-size:12px;color:var(--muted)}
+details.card[open]>summary::after{content:"閉じる"}
+details.card[open]>summary{margin-bottom:8px}
+.zoomt{display:inline-flex;gap:4px;align-items:center;margin-left:auto}
+</style>
+<script>window.HNSW_TRACES=window.HNSW_TRACES||{};</script>
+<script src="data/trace_full.js"></script>
+<script src="data/trace_sigm.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>HNSW 構築トレース</h1>
+    <p>実データ（SIFT・GIST の一部）で <code>src/build_full</code> と <code>src/build_sigm</code> が記録した挙動を、挿入1回ずつ再生します。点の位置は主成分分析で2次元に写したもので、元の空間で近い点が離れて見えることがあります。2次元の合成データで試す版は <a href="index.html">index.html</a> です。</p>
+  </header>
+
+  <section class="card" aria-label="読み込んだトレース">
+    <div class="loadbar">
+      <div class="chips" id="tchips"></div>
+      <label class="file">別のトレースを読み込む <input type="file" id="fileIn" accept=".js,.json" multiple></label>
+    </div>
+    <div id="loadmsg"></div>
+  </section>
+
+  <nav class="tabs" role="tablist" aria-label="表示の切り替え">
+    <button role="tab" aria-selected="true" data-tab="replay" type="button">① 挿入の再生</button>
+    <button role="tab" aria-selected="false" data-tab="query" type="button">② 完成したグラフで検索</button>
+    <button role="tab" aria-selected="false" data-tab="cmp" type="button">③ 全体構築と SIGM の比較</button>
+  </nav>
+
+  <div class="work">
+    <div class="stage">
+      <div class="layerbar" id="layerbar"></div>
+      <canvas id="cv" width="700" height="700" aria-label="グラフの描画"></canvas>
+      <div class="legend" id="legend"></div>
+      <div class="card tablewrap" id="cmpOut" hidden></div>
+    </div>
+
+    <aside id="side">
+      <!-- 挿入の再生 -->
+      <section class="card" id="p-replay">
+        <div class="timeline">
+          <input type="range" id="tl" min="0" max="0" value="0" aria-label="何番目の挿入か">
+          <div class="phasebar" id="phasebar"></div>
+          <div class="tl-labels"><span id="tlL"></span><span id="tlR"></span></div>
+        </div>
+        <div class="row">
+          <button id="bStep" type="button">1ステップ進む</button>
+          <button id="bPrev" type="button">前の点</button>
+          <button id="bNext" type="button">次の点</button>
+          <button id="bPlay" type="button">再生</button>
+          <button id="bPhase" type="button" hidden>SIGM の挿入段階へ</button>
+        </div>
+      </section>
+      <section class="card" id="p-now">
+        <h2>いま起きていること <span class="pill" id="phasePill"></span></h2>
+        <p class="now" id="nowText"></p>
+        <ol class="stages" id="stageList" aria-label="この点の処理の流れ"></ol>
+      </section>
+      <details class="card" id="p-replay-info">
+        <summary>この点の詳しい数値</summary>
+        <dl class="kv" id="insKv"></dl>
+        <div class="tablewrap" style="margin-top:8px"><table id="insTable"></table></div>
+      </details>
+      <details class="card" id="p-replay-chart">
+        <summary>挿入ごとの距離計算のグラフ</summary>
+        <p class="help">細い点は1回ごとの値、線は前後25回の平均、縦線が今の位置です。</p>
+        <canvas class="mini" id="mini" aria-label="挿入ごとの距離計算回数のグラフ"></canvas>
+        <div class="row" style="margin-top:6px"><button id="bBig" type="button">距離計算が最も多い挿入へ</button></div>
+        <div class="speed"><label for="speed">再生の速さ</label><input id="speed" type="range" min="0" max="100" value="45"></div>
+      </details>
+
+      <!-- 検索 -->
+      <section class="card" id="p-query" hidden>
+        <div class="row">
+          <label class="file">クエリ <select id="qsel"></select></label>
+          <button id="qStep" type="button">1ステップ進む</button>
+          <button id="qAll" type="button">最後まで</button>
+        </div>
+      </section>
+      <section class="card" id="p-query-now" hidden>
+        <h2>いま起きていること</h2>
+        <p class="now" id="qNow"></p>
+      </section>
+      <details class="card" id="p-query-info" hidden>
+        <summary>このグラフの検索性能</summary>
+        <dl class="kv" id="qKv"></dl>
+        <div class="tablewrap" style="margin-top:8px"><table id="qTable"></table></div>
+      </details>
+
+      <!-- 比較 -->
+      <section class="card" id="p-cmp" hidden>
+        <h2>距離計算の積み上がり方を比べる</h2>
+        <p class="help">縦軸はそこまでの距離計算の合計です。紫の帯が SIGM の挿入段階で、論文が「マージのコスト」と呼ぶのはこの部分です。</p>
+        <dl class="kv" id="cmpKv"></dl>
+      </section>
+    </aside>
+  </div>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+const cv=$('#cv'),ctx=cv.getContext('2d');
+let CW=700;const PAD=16;
+const TRACES={};
+const S={tab:'replay',key:null,i:0,s:0,view:0,timer:null,q:0,qs:0,R:{},F:{},zoom:true};
+
+function fmt(n){return Math.round(n).toLocaleString('ja-JP')}
+function short(n){return n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e4?Math.round(n/1e3)+'k':n>=1e3?(n/1e3).toFixed(1)+'k':String(Math.round(n))}
+function COL(){const s=getComputedStyle(document.documentElement);const g=n=>s.getPropertyValue(n).trim();return{bg:g('--surface'),ink:g('--ink'),muted:g('--muted'),line:g('--line'),a:g('--a'),b:g('--b'),hit:g('--hit'),seed:g('--seed'),trail:g('--trail'),cut:g('--cut'),mono:g('--font-mono'),body:g('--font-body')}}
+const sec=v=>v<1?(v*1000).toFixed(1)+' ms':v.toFixed(2)+' 秒';
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// ---------- トレースの準備と再生 ----------
+function prep(T){
+  T.N=T.proj.length/2;
+  T.qset=new Set(T.query_ids);
+  T.cum=new Float64Array(T.inserts.length+1);
+  for(let i=0;i<T.inserts.length;i++)T.cum[i+1]=T.cum[i]+T.inserts[i].d;
+  T.label=T.method==='sigm'?'SIGM':'全体構築';
+  // 再生で作ったグラフがプログラムの集計と一致するか確かめる
+  const R=newReplay(T);replayTo(T,R,T.inserts.length);
+  let e0=0;const n=T.inserts.length;for(let v=0;v<T.N;v++){const a=R.adj[0]&&R.adj[0][v];if(a)e0+=a.length}
+  const seen=new Uint8Array(T.N);const st=[R.entry];seen[R.entry]=1;let reached=0;
+  while(st.length){const v=st.pop();reached++;for(const u of (R.adj[0][v]||[]))if(!seen[u]){seen[u]=1;st.push(u)}}
+  T.check={avg:e0/n,reached,ok:Math.abs(e0/n-T.stats.avg_deg0)<1e-3&&reached===T.stats.reached};
+  return T;
+}
+function newReplay(T){return{cursor:0,adj:[],lv:new Int16Array(T.N).fill(-1),entry:-1,maxL:-1}}
+function applyInsert(T,R,i){
+  const it=T.inserts[i];R.lv[it.v]=it.lv;
+  for(let l=0;l<=it.lv;l++){while(R.adj.length<=l)R.adj.push(new Array(T.N));if(!R.adj[l][it.v])R.adj[l][it.v]=[]}
+  for(const L of it.L){
+    if(L.g)continue;const A=R.adj[L.l];
+    A[it.v]=L.nb.slice();
+    for(const u of L.nb)(A[u]||(A[u]=[])).push(it.v);
+    for(const[p,after]of L.pr)A[p]=after.slice();
+  }
+  if(it.ne){R.entry=it.v;R.maxL=Math.max(R.maxL,it.lv)}
+}
+function replayTo(T,R,i){if(i<R.cursor){Object.assign(R,newReplay(T))}while(R.cursor<i){applyInsert(T,R,R.cursor);R.cursor++}return R}
+function stateBefore(key,i){const T=TRACES[key];if(!S.R[key])S.R[key]=newReplay(T);return replayTo(T,S.R[key],i)}
+function finalState(key){const T=TRACES[key];if(!S.F[key])S.F[key]=replayTo(T,newReplay(T),T.inserts.length);return S.F[key]}
+
+function register(T,src){
+  if(!T||!T.proj||!T.inserts){showMsg(`${esc(src)} はトレースの形式ではありません`,true);return}
+  const key=T.method||('trace'+Object.keys(TRACES).length);
+  TRACES[key]=prep(T);delete S.R[key];delete S.F[key];
+  if(!S.key||S.key===key){S.key=key;S.i=0;S.s=0}
+}
+function showMsg(t,warn){$('#loadmsg').innerHTML=t?`<p class="${warn?'warn':'ok'}">${t}</p>`:''}
+
+// ---------- 描画の基本 ----------
+function sizeCanvas(){const w=Math.max(280,Math.round(cv.clientWidth||700));const dpr=window.devicePixelRatio||1;cv.style.height=w+'px';cv.width=Math.round(w*dpr);cv.height=Math.round(w*dpr);ctx.setTransform(dpr,0,0,dpr,0,0);CW=w}
+function clear(c){ctx.clearRect(0,0,CW,CW);ctx.fillStyle=c.bg;ctx.fillRect(0,0,CW,CW)}
+let P=null;
+let VIEW={x0:0,y0:0,span:1};   // 表示している範囲（注目部分の拡大用）
+const X=v=>PAD+(P[2*v]-VIEW.x0)/VIEW.span*(CW-2*PAD),Y=v=>PAD+(1-(P[2*v+1]-VIEW.y0)/VIEW.span)*(CW-2*PAD);
+function setView(ids){
+  if(!S.zoom||!ids.length){VIEW={x0:0,y0:0,span:1};return}
+  let a=1e9,b=-1e9,c=1e9,d=-1e9;
+  for(const v of ids){const x=P[2*v],y=P[2*v+1];a=Math.min(a,x);b=Math.max(b,x);c=Math.min(c,y);d=Math.max(d,y)}
+  const span=Math.min(1.05,Math.max(0.08,Math.max(b-a,d-c)*1.3));
+  VIEW={x0:(a+b)/2-span/2,y0:(c+d)/2-span/2,span};
+}
+const RZ=()=>1+(1-Math.min(1,VIEW.span))*0.9;  // 拡大したぶん印も少し大きくする
+function shape(v,r,sq){ctx.beginPath();if(sq)ctx.rect(X(v)-r*.9,Y(v)-r*.9,r*1.8,r*1.8);else ctx.arc(X(v),Y(v),r,0,Math.PI*2)}
+function dot(v,r,fill,sq,alpha=1,stroke){ctx.save();ctx.globalAlpha=alpha;shape(v,r,sq);ctx.fillStyle=fill;ctx.fill();if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=1.5;ctx.stroke()}ctx.restore()}
+function ring(v,r,col,lw=2,dash,alpha=1){ctx.save();ctx.globalAlpha=alpha;if(dash)ctx.setLineDash(dash);shape(v,r,false);ctx.strokeStyle=col;ctx.lineWidth=lw;ctx.stroke();ctx.restore()}
+function seg(a,b,col,w,alpha=1,dash){ctx.save();ctx.globalAlpha=alpha;if(dash)ctx.setLineDash(dash);ctx.strokeStyle=col;ctx.lineWidth=w;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(X(a),Y(a));ctx.lineTo(X(b),Y(b));ctx.stroke();ctx.restore()}
+function cross(v,col,r=7){ctx.save();ctx.strokeStyle=col;ctx.lineWidth=2.5;ctx.beginPath();ctx.moveTo(X(v)-r,Y(v)-r);ctx.lineTo(X(v)+r,Y(v)+r);ctx.moveTo(X(v)+r,Y(v)-r);ctx.lineTo(X(v)-r,Y(v)+r);ctx.stroke();ctx.restore()}
+function tag(v,text,c,col){ctx.save();ctx.font=`500 13px ${c.body}`;const w=ctx.measureText(text).width;let tx=X(v)+16,ty=Y(v)-14;if(tx+w>CW-4)tx=X(v)-16-w;if(ty<60)ty=Y(v)+26;ctx.lineJoin='round';ctx.lineWidth=5;ctx.strokeStyle=c.bg;ctx.strokeText(text,tx,ty);ctx.fillStyle=col||c.ink;ctx.fillText(text,tx,ty);ctx.restore()}
+function num(v,n,c){ctx.save();ctx.font=`500 11px ${c.mono}`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle=c.bg;ctx.fillText(String(n),X(v),Y(v)+.5);ctx.restore()}
+function caption(title,sub,c){
+  ctx.save();ctx.font=`700 15px ${c.body}`;const w1=ctx.measureText(title).width;ctx.font=`12px ${c.body}`;const w2=sub?ctx.measureText(sub).width:0;
+  const w=Math.max(w1,w2)+24,h=sub?50:32;ctx.globalAlpha=.94;ctx.fillStyle=c.bg;ctx.strokeStyle=c.line;ctx.lineWidth=1;
+  ctx.beginPath();ctx.roundRect?ctx.roundRect(10,10,w,h,8):ctx.rect(10,10,w,h);ctx.fill();ctx.stroke();ctx.globalAlpha=1;
+  ctx.fillStyle=c.ink;ctx.font=`700 15px ${c.body}`;ctx.fillText(title,22,32);
+  if(sub){ctx.fillStyle=c.muted;ctx.font=`12px ${c.body}`;ctx.fillText(sub,22,50)}ctx.restore();
+}
+function corner(text,c){ctx.save();ctx.font=`500 12px ${c.mono}`;ctx.fillStyle=c.muted;ctx.textAlign='right';ctx.fillText(text,CW-10,CW-10);ctx.restore()}
+function drawEdges(R,l,col,alpha,w){
+  const A=R.adj[l];if(!A)return;ctx.save();ctx.strokeStyle=col;ctx.globalAlpha=alpha;ctx.lineWidth=w;ctx.beginPath();
+  const seen=new Set();
+  for(let v=0;v<A.length;v++){const nb=A[v];if(!nb)continue;for(const u of nb){const k=v<u?v*1048576+u:u*1048576+v;if(seen.has(k))continue;seen.add(k);ctx.moveTo(X(v),Y(v));ctx.lineTo(X(u),Y(u))}}
+  ctx.stroke();ctx.restore();
+}
+// 背景：今の層のグラフを薄く描く（注目している印の邪魔をしないように）
+function drawBackground(T,R,l,c,dimNotYet){
+  const rz=RZ();
+  drawEdges(R,l,c.muted,l>0?.35:.13,l>0?1:.6);
+  for(let v=0;v<T.N;v++){
+    if(T.qset.has(v))continue;
+    const lv=R.lv[v];const sq=v>=T.n1;
+    if(lv<0){if(dimNotYet)dot(v,1.4*rz,c.muted,false,.18);continue}
+    if(lv<l){dot(v,1.5*rz,c.muted,false,.25);continue}
+    dot(v,(l>0?3.4:2.4)*rz,sq?c.b:c.a,sq,.45);
+  }
+}
+// 探索の記録：距離を計算した点（輪）と、展開した点（塗り＋展開した順番）
+function drawSearch(L,c){
+  const rz=RZ();
+  if(L.ev){for(let k=0;k<L.ev.length;k+=2){const f=L.ev[k],t=L.ev[k+1];if(f>=0)seg(f,t,c.hit,1.2,.5)}for(let k=1;k<L.ev.length;k+=2)ring(L.ev[k],4.5*rz,c.hit,1.6)}
+  if(L.ex){const showNum=L.ex.length<=40;L.ex.forEach((v,k)=>{dot(v,(showNum?7.5:5)*rz,c.hit,false);if(showNum)num(v,k+1,c)})}
+}
+
+// ---------- ① 挿入の再生 ----------
+function curT(){return TRACES[S.key]}
+// 1つの点の処理を、層ごとに「近づく」または「候補探し → 辺を張る」に分けたステップの列
+function stagesOf(it){if(!it.L.length)return[{k:-1,part:'first'}];const st=[];it.L.forEach((L,k)=>{if(L.g)st.push({k,part:'greedy'});else{st.push({k,part:'search'});st.push({k,part:'link'})}});return st}
+const STAGE_NAME={first:'入口になる',greedy:'近づく',search:'候補探し',link:'辺を張る'};
+function cutEdges(R,it,L){const out=[];for(const[p,after]of L.pr){const before=new Set([...(R.adj[L.l][p]||[]),it.v]);const keep=new Set(after);for(const u of before)if(!keep.has(u))out.push([p,u])}return out}
+function renderReplay(c){
+  const T=curT();P=T.proj;
+  const it=T.inserts[S.i];const R=stateBefore(S.key,S.i);
+  const st=stagesOf(it)[S.s];const L=st.k>=0?it.L[st.k]:null;
+  const l=S.view;const here=L&&L.l===l;
+  // 注目する点を決めて、そこへ拡大する
+  const focus=[it.v];
+  if(here){if(st.part==='link'){focus.push(...L.c,...L.nb,...L.pr.map(x=>x[0]))}else if(L.ev){for(let k=1;k<L.ev.length;k+=2)focus.push(L.ev[k])}else focus.push(...L.c)}
+  setView(focus);
+  const rz=RZ();
+  clear(c);
+  drawBackground(T,R,l,c,true);
+  if(here){
+    if(st.part==='greedy'){drawSearch(L,c);if(L.c.length){ring(L.c[0],13*rz,c.ink,3);tag(L.c[0],'ここで止まる → 次の層の入口',c)}}
+    else if(st.part==='search'){drawSearch(L,c);for(const u of L.c)ring(u,10*rz,c.seed,2.2)}
+    else{
+      const sel=new Set(L.nb);
+      for(const u of L.c)if(!sel.has(u))dot(u,4.5*rz,c.seed,false,.75);
+      for(const[p,u]of cutEdges(R,it,L))seg(p,u,c.cut,2.6,.95,[6,4]);
+      for(const[p]of L.pr)ring(p,12*rz,c.trail,2.8);
+      for(const u of L.nb)seg(it.v,u,c.ink,3.2,.95);
+      for(const u of L.nb)dot(u,6.5*rz,c.ink,u>=T.n1,1,c.bg);
+    }
+  }else if(R.entry>=0&&R.lv[R.entry]>=l){ring(R.entry,10*rz,c.ink,2,[4,3]);tag(R.entry,'入口',c,c.muted)}
+  const sq=it.v>=T.n1;
+  dot(it.v,8*rz,sq?c.b:c.a,sq,1,c.bg);ring(it.v,15*rz,c.ink,3);
+  tag(it.v,`挿入する点 v=${it.v}`,c);
+  const title=st.part==='first'?'最初の点：入口になる':`L${L.l}｜${STAGE_NAME[st.part]}${here?'':'（別の層を表示中）'}`;
+  caption(title,`${T.label}・${S.i+1} 点目${T.phases.length>1?'・'+T.phases[it.ph].name:''}`,c);
+  corner(`表示中の層 L${l}${S.zoom&&VIEW.span<1?'・拡大中':''}`,c);
+}
+function nowText(T,it,st,R){
+  const p=v=>`v=${v}`;
+  if(st.part==='first')return`<b>${p(it.v)}</b> はグラフの最初の点なので、辺は張らずにそのまま入口になります。`;
+  const L=it.L[st.k];const ev=L.ev?L.ev.length/2:null;const ex=L.ex?L.ex.length:null;
+  const evs=ev!=null?`距離計算は <b>${ev} 回</b>。`:'';
+  const last=S.s===stagesOf(it).length-1&&it.ne?' この点は今までの最上層より高い層を引いたので、<b>新しい入口</b>になります。':'';
+  if(st.part==='greedy')return`<b>L${L.l}</b>：挿入する点はこの層にはいない（最上層 L${it.lv}）ので、辺は張らずに近づくだけです。入口から ef=1 の貪欲法で${ex!=null?` ${ex} 個の点をたどり、`:''}<b>${p(L.c[0])}</b> で止まりました。ここが次の層の入口になります。${evs}`+last;
+  const efc=(T.phases[it.ph]||T.phases[0]).efc;
+  if(st.part==='search')return`<b>L${L.l}</b>：辺を張る相手の候補を探します。${ex!=null?`オレンジの番号の順に ${ex} 個の点を展開し、`:''}近い順に <b>${L.c.length} 件</b>（efConstruction=${efc}）を候補にしました（緑の輪）。${evs}`;
+  const max=L.l===0?2*T.M:T.M;const cut=cutEdges(R,it,L).length;
+  return`<b>L${L.l}</b>：候補 ${L.c.length} 件から、方向がかぶらないものを選ぶヒューリスティックで <b>${L.nb.length} 本</b>を選び、双方向に辺を張りました（太い黒線）。`+
+    (L.pr.length?` 相手の次数が上限 ${max} を超えた <b>${L.pr.length} 点</b>（紫の輪）は自分の辺を選び直し、<b>${cut} 本</b>の辺が切られました（赤の破線）。`:` 相手の次数は上限 ${max} を超えなかったので、選び直しはありません。`)+last;
+}
+function renderReplayPanel(){
+  const T=curT();const it=T.inserts[S.i];const ph=T.phases[it.ph]||T.phases[0];const stages=stagesOf(it);const R=stateBefore(S.key,S.i);
+  const tl=$('#tl');tl.max=T.inserts.length-1;tl.value=S.i;
+  $('#tlL').textContent=`${S.i+1} / ${T.inserts.length} 点目`;$('#tlR').textContent=ph.name;
+  const cols=['var(--ink)','var(--trail)'];
+  $('#phasebar').innerHTML=T.phases.map((p,k)=>`<i style="width:${(p.end-p.start)/T.inserts.length*100}%;background:${cols[k%2]};opacity:${k===it.ph?1:.35}" title="${esc(p.name)}"></i>`).join('');
+  $('#phasePill').textContent=`${S.s+1}/${stages.length}`;
+  $('#bPhase').hidden=T.phases.length<2;
+  $('#nowText').innerHTML=nowText(T,it,stages[S.s],R);
+  $('#stageList').innerHTML=stages.map((st,k)=>`<li><button type="button" data-stage="${k}" class="${k<S.s?'done':''}" ${k===S.s?'aria-current="step"':''}>${st.k>=0?`L${it.L[st.k].l} `:''}${STAGE_NAME[st.part]}</button></li>`).join('');
+  const sq=it.v>=T.n1;
+  $('#insKv').innerHTML=`<dt>挿入する点</dt><dd>v=${it.v}（${sq?'part2':'part1'}）</dd><dt>抽選した最上層</dt><dd>L${it.lv}${it.ne?'（新しい入口）':''}</dd><dt>この時点のグラフ</dt><dd>${fmt(S.i)} 点・${R.maxL+1} 層</dd><dt>この点の距離計算</dt><dd>${fmt(it.d)}</dd><dt>ここまでの合計</dt><dd>${fmt(T.cum[S.i+1])}</dd><dt>efConstruction</dt><dd>${ph.efc}</dd><dt>この段階の実行時間</dt><dd>${sec(ph.sec)}</dd>`;
+  let h='<thead><tr><th>層</th><th>処理</th><th>距離計算</th><th>候補</th><th>近傍</th><th>選び直し</th></tr></thead><tbody>';
+  if(!it.L.length)h+='<tr><td colspan="6">最初の点なので、入口になるだけです</td></tr>';
+  const curK=stages[S.s].k;
+  it.L.forEach((L,k)=>{const ev=L.ev?L.ev.length/2:'—';h+=`<tr class="${k===curK?'cur':''}"><td>L${L.l}</td><td>${L.g?'近づく':'辺を張る'}</td><td class="num">${ev}</td><td class="num">${L.g?'—':L.c.length}</td><td class="num">${L.g?'—':L.nb.length}</td><td class="num">${L.g?'—':L.pr.length}</td></tr>`});
+  $('#insTable').innerHTML=h+'</tbody>';
+  if($('#p-replay-chart').open)drawMini();
+}
+function drawMini(){
+  const T=curT();const m=$('#mini');const c=COL();const dpr=window.devicePixelRatio||1;const w=m.clientWidth||330,h=150;
+  m.width=Math.round(w*dpr);m.height=Math.round(h*dpr);const g=m.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,w,h);
+  const n=T.inserts.length;const d=T.inserts.map(x=>x.d);const mx=Math.max(1,...d);
+  const ml=40,mr=6,mt=8,mb=18;const px=i=>ml+i/(Math.max(1,n-1))*(w-ml-mr),py=v=>mt+(1-v/mx)*(h-mt-mb);
+  g.font=`11px ${c.mono}`;g.fillStyle=c.muted;g.strokeStyle=c.line;g.lineWidth=1;
+  for(const v of[0,mx/2,mx]){const y=py(v);g.beginPath();g.moveTo(ml,y);g.lineTo(w-mr,y);g.stroke();g.textAlign='right';g.fillText(short(v),ml-5,y+4)}
+  if(T.phases.length>1){const x=px(T.phases[1].start);g.save();g.fillStyle=c.trail;g.globalAlpha=.08;g.fillRect(x,mt,w-mr-x,h-mt-mb);g.restore();g.textAlign='left';g.fillStyle=c.trail;g.fillText('挿入段階',x+4,mt+11)}
+  g.fillStyle=c.muted;g.globalAlpha=.35;for(let i=0;i<n;i++)g.fillRect(px(i),py(d[i]),1.2,1.2);g.globalAlpha=1;
+  g.strokeStyle=c.ink;g.lineWidth=1.6;g.beginPath();let s=0;const W=25;const q=[];
+  for(let i=0;i<n;i++){q.push(d[i]);s+=d[i];if(q.length>W)s-=q.shift();const y=py(s/q.length);i?g.lineTo(px(i),y):g.moveTo(px(i),y)}g.stroke();
+  const x=px(S.i);g.strokeStyle=c.hit;g.lineWidth=2;g.beginPath();g.moveTo(x,mt);g.lineTo(x,h-mb);g.stroke();
+  g.fillStyle=c.muted;g.textAlign='center';g.fillText('挿入の回数 →',ml+(w-ml-mr)/2,h-4);
+}
+function viewOfStage(it,k){const st=stagesOf(it)[k];return st.k>=0?it.L[st.k].l:0}
+function setInsert(i,s=0){const T=curT();S.i=Math.max(0,Math.min(T.inserts.length-1,i));const it=T.inserts[S.i];S.s=Math.max(0,Math.min(s,stagesOf(it).length-1));S.view=viewOfStage(it,S.s)}
+function step(){const T=curT();const it=T.inserts[S.i];if(S.s<stagesOf(it).length-1){S.s++;S.view=viewOfStage(it,S.s);return true}if(S.i>=T.inserts.length-1)return false;setInsert(S.i+1,0);return true}
+function stopTimer(){if(S.timer){clearInterval(S.timer);S.timer=null}$('#bPlay').textContent='再生'}
+function play(){if(S.timer){stopTimer();return}$('#bPlay').textContent='停止';const delay=Math.round(1400-(+$('#speed').value)*13.5);S.timer=setInterval(()=>{if(!step())stopTimer();renderAll()},delay)}
+
+// ---------- ② 完成したグラフで検索 ----------
+function renderQuery(c){
+  const T=curT();P=T.proj;const R=finalState(S.key);
+  const qt=T.qtraces[S.q];const qv=T.query_ids[qt.q];const L=qt.L[S.qs];const l=S.view;const here=L&&L.l===l;
+  const done=S.qs===qt.L.length-1;const gt=T.gt[qt.q];
+  const focus=[qv];if(here&&L.ev)for(let k=1;k<L.ev.length;k+=2)focus.push(L.ev[k]);if(done)focus.push(...gt);
+  setView(focus);const rz=RZ();
+  clear(c);
+  drawBackground(T,R,l,c,false);
+  if(here){drawSearch(L,c);if(L.g&&L.c.length){ring(L.c[0],13*rz,c.ink,3);tag(L.c[0],'ここで止まる → 次の層の入口',c)}}
+  if(done&&l===0){const g=new Set(gt);for(const u of qt.res)ring(u,12*rz,g.has(u)?c.seed:c.hit,3);for(const u of gt)if(!qt.res.includes(u))ring(u,12*rz,c.cut,2.5,[4,3])}
+  cross(qv,c.ink,8*rz);ring(qv,15*rz,c.ink,2);tag(qv,'クエリ',c);
+  caption(`L${L.l}｜${L.g?'近づく（ef=1）':`候補を ${T.qtrace_L} 件持って探す`}`,`${T.label} の完成グラフ・クエリ ${S.q+1}`,c);
+  corner(`表示中の層 L${l}${S.zoom&&VIEW.span<1?'・拡大中':''}`,c);
+}
+function renderQueryPanel(){
+  const T=curT();const sel=$('#qsel');
+  if(sel.dataset.key!==S.key){sel.innerHTML=T.qtraces.map((q,k)=>`<option value="${k}">クエリ ${k+1}（点 ${T.query_ids[q.q]}）</option>`).join('');sel.dataset.key=S.key}
+  sel.value=S.q;
+  const qt=T.qtraces[S.q];const L=qt.L[S.qs];const done=S.qs===qt.L.length-1;const gt=new Set(T.gt[qt.q]);const hit=qt.res.filter(u=>gt.has(u)).length;
+  const ev=L.ev?L.ev.length/2:0;
+  let t=L.g?`<b>L${L.l}</b>：入口から ef=1 の貪欲法で、オレンジの番号の順に ${L.ex.length} 個の点をたどり、<b>v=${L.c[0]}</b> で止まりました。ここが次の層の入口です。距離計算 <b>${ev} 回</b>。`
+           :`<b>L0</b>：候補を最大 ${T.qtrace_L} 件持ちながら探し、${L.ex.length} 個の点を展開しました。距離計算 <b>${ev} 回</b>。`;
+  if(done)t+=` 結果の上位 ${T.k} 件のうち <b>${hit} 件</b>が本当の近傍でした（緑＝正解、赤の破線＝取りこぼし）。このクエリ全体の距離計算は ${fmt(qt.d)} 回で、全件探索なら ${fmt(T.stats.n)} 回です。`;
+  $('#qNow').innerHTML=t;
+  $('#qKv').innerHTML=`<dt>挿入した点</dt><dd>${fmt(T.stats.n)}</dd><dt>層数</dt><dd>${T.stats.layers}</dd><dt>Layer 0 の平均次数</dt><dd>${T.stats.avg_deg0.toFixed(2)}</dd>`;
+  let h=`<thead><tr><th>L</th><th>recall@${T.k}</th><th>距離計算/クエリ</th><th>QPS</th></tr></thead><tbody>`;
+  for(const e of T.eval)h+=`<tr><td>L=${e.L}</td><td class="num">${e.recall.toFixed(4)}</td><td class="num">${e.dpq.toFixed(0)}</td><td class="num">${fmt(e.qps)}</td></tr>`;
+  $('#qTable').innerHTML=h+`</tbody>`;
+}
+
+// ---------- ③ 比較 ----------
+function niceStep(range,n){const raw=range/n;const p=Math.pow(10,Math.floor(Math.log10(raw)));const f=raw/p;return(f<1.5?1:f<3?2:f<7?5:10)*p}
+function renderCmp(c){
+  clear(c);
+  const F=TRACES.full,G=TRACES.sigm;
+  if(!F||!G){ctx.fillStyle=c.muted;ctx.font=`14px ${c.body}`;ctx.fillText('trace_full.js と trace_sigm.js の両方が必要です',24,40);return}
+  const m={l:70,r:24,t:30,b:56};const w=CW-m.l-m.r,h=CW-m.t-m.b;
+  const nx=Math.max(F.inserts.length,G.inserts.length);const ymax=Math.max(F.cum[F.inserts.length],G.cum[G.inserts.length])*1.05;
+  const px=i=>m.l+i/nx*w,py=v=>m.t+(1-v/ymax)*h;
+  ctx.save();ctx.font=`12px ${c.mono}`;ctx.strokeStyle=c.line;ctx.fillStyle=c.muted;ctx.lineWidth=1;
+  const ys=niceStep(ymax,5);for(let v=0;v<=ymax;v+=ys){const y=py(v);ctx.beginPath();ctx.moveTo(m.l,y);ctx.lineTo(m.l+w,y);ctx.stroke();ctx.textAlign='right';ctx.fillText(short(v),m.l-8,y+4)}
+  const xs=niceStep(nx,5);for(let v=0;v<=nx;v+=xs){const x=px(v);ctx.beginPath();ctx.moveTo(x,m.t);ctx.lineTo(x,m.t+h);ctx.stroke();ctx.textAlign='center';ctx.fillText(short(v),x,m.t+h+18)}
+  ctx.font=`12px ${c.body}`;ctx.textAlign='center';ctx.fillText('挿入の回数',m.l+w/2,CW-14);ctx.textAlign='left';ctx.fillText('距離計算の合計',m.l,m.t-12);
+  ctx.restore();
+  if(G.phases.length>1){const x=px(G.phases[1].start);ctx.save();ctx.fillStyle=c.trail;ctx.globalAlpha=.07;ctx.fillRect(x,m.t,px(G.phases[1].end)-x,h);ctx.restore();ctx.save();ctx.fillStyle=c.trail;ctx.font=`500 12px ${c.body}`;ctx.fillText('SIGM の挿入段階（マージのコスト）',x+6,m.t+16);ctx.restore()}
+  const line=(T,col,dash)=>{ctx.save();ctx.strokeStyle=col;ctx.lineWidth=2.4;if(dash)ctx.setLineDash(dash);ctx.beginPath();for(let i=0;i<=T.inserts.length;i+=Math.max(1,Math.floor(T.inserts.length/600))){const x=px(i),y=py(T.cum[i]);i?ctx.lineTo(x,y):ctx.moveTo(x,y)}ctx.lineTo(px(T.inserts.length),py(T.cum[T.inserts.length]));ctx.stroke();ctx.restore()};
+  line(F,c.ink);line(G,c.trail);
+  const lab=(T,col,text,dy=0)=>{const x=px(T.inserts.length),y=py(T.cum[T.inserts.length]);ctx.save();ctx.fillStyle=col;ctx.beginPath();ctx.arc(x,y,4.5,0,Math.PI*2);ctx.fill();ctx.font=`500 12px ${c.body}`;const tw=ctx.measureText(text).width;ctx.lineJoin='round';ctx.lineWidth=4;ctx.strokeStyle=c.bg;ctx.strokeText(text,x-tw-10,y-10+dy);ctx.fillText(text,x-tw-10,y-10+dy);ctx.restore()};
+  const fe=F.cum[F.inserts.length],ge=G.cum[G.inserts.length];
+  lab(F,c.ink,`全体構築 ${short(fe)}`);
+  const gy=py(ge),fy=py(fe);
+  lab(G,c.trail,`SIGM ${short(ge)}`,Math.abs(gy-fy)<18?(gy>=fy?26:-16):0);
+}
+function renderCmpPanel(){
+  const F=TRACES.full,G=TRACES.sigm;const out=$('#cmpOut');
+  if(!F||!G){$('#cmpKv').innerHTML='';out.innerHTML='<p class="help" style="margin:0">両方のトレースを読み込むと、ここに表が出ます。</p>';return}
+  const same=['dataset','split','limit','seed','M','efc'].every(k=>F[k]===G[k]);
+  const avg=(T,a,b)=>(T.cum[b]-T.cum[a])/Math.max(1,b-a);
+  const gp=G.phases;
+  $('#cmpKv').innerHTML=`<dt>全体構築：1挿入あたり</dt><dd>${fmt(avg(F,0,F.inserts.length))}</dd><dt>SIGM 土台：1挿入あたり</dt><dd>${fmt(avg(G,gp[0].start,gp[0].end))}</dd><dt>SIGM 挿入段階：1挿入あたり</dt><dd>${fmt(avg(G,gp[1].start,gp[1].end))}</dd><dt>SIGM の挿入段階 ÷ 全体構築</dt><dd>${(gp[1].dist/F.phases[0].dist*100).toFixed(0)}%</dd>`;
+  const rows=[['データ',`${F.dataset}/${F.split}`,`${G.dataset}/${G.split}`],['各 part の先頭',fmt(F.limit),fmt(G.limit)],['挿入した点',fmt(F.stats.n),fmt(G.stats.n)],['層数',F.stats.layers,G.stats.layers],['Layer 0 の平均次数',F.stats.avg_deg0.toFixed(2),G.stats.avg_deg0.toFixed(2)],['入口から辿れる点',`${fmt(F.stats.reached)}（${(F.stats.reached/F.stats.n*100).toFixed(1)}%）`,`${fmt(G.stats.reached)}（${(G.stats.reached/G.stats.n*100).toFixed(1)}%）`],['構築（土台）の距離計算',fmt(F.phases[0].dist),fmt(gp[0].dist)],['マージ（挿入段階）の距離計算','—',fmt(gp[1].dist)],['距離計算の合計',fmt(F.cum[F.inserts.length]),fmt(G.cum[G.inserts.length])],['構築（土台）の時間',sec(F.phases[0].sec),sec(gp[0].sec)],['マージ（挿入段階）の時間','—',sec(gp[1].sec)],['時間の合計',sec(F.phases[0].sec),sec(gp[0].sec+gp[1].sec)]];
+  for(const e of F.eval){const g=G.eval.find(x=>x.L===e.L);rows.push([`recall@${F.k}（L=${e.L}）`,e.recall.toFixed(4),g?g.recall.toFixed(4):'—'])}
+  for(const e of F.eval){const g=G.eval.find(x=>x.L===e.L);rows.push([`検索1回の距離計算（L=${e.L}）`,e.dpq.toFixed(0),g?g.dpq.toFixed(0):'—'])}
+  for(const e of F.eval){const g=G.eval.find(x=>x.L===e.L);rows.push([`QPS（L=${e.L}）`,fmt(e.qps),g?fmt(g.qps):'—'])}
+  out.innerHTML=(same?'':'<p class="warn" style="margin:0 0 8px">2つのトレースはデータや設定が違います（dataset・split・limit・seed・M・efc のどれか）。同じ条件で作り直すと比較できます。</p>')+`<table><thead><tr><th></th><th>全体構築</th><th>SIGM</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${r[0]}</td><td class="num">${r[1]}</td><td class="num">${r[2]}</td></tr>`).join('')}</tbody></table>`;
+}
+
+// ---------- 共通 ----------
+function renderChips(){
+  const keys=Object.keys(TRACES);
+  $('#tchips').innerHTML=keys.length?keys.map(k=>{const T=TRACES[k];return`<button class="tchip" type="button" data-key="${esc(k)}" aria-pressed="${k===S.key}"><b>${esc(T.label)}</b><small>${esc(T.dataset)}/${esc(T.split)}・各 part 先頭 ${fmt(T.limit)} 本・M=${T.M}・efC=${T.efc}${T.method==='sigm'?`・挿入 efC=${T.sigm_efc}`:''}${T.check.ok?'':'・再生不一致'}</small></button>`}).join(''):'';
+  const bad=keys.filter(k=>!TRACES[k].check.ok);
+  if(bad.length)showMsg(`${bad.map(k=>TRACES[k].label).join('・')} の再生結果がプログラムの集計と一致しません。トレースとプログラムの版を確認してください。`,true);
+}
+function renderLayerbar(){
+  const bar=$('#layerbar');if(S.tab==='cmp'||!S.key){bar.innerHTML='';return}
+  const T=curT();const maxL=T.stats.layers-1;
+  let h='<span>層：</span>';for(let l=maxL;l>=0;l--)h+=`<button class="chip" type="button" data-layer="${l}" aria-pressed="${l===S.view}">L${l}</button>`;
+  h+=`<label class="zoomt"><input type="checkbox" id="zoomChk" ${S.zoom?'checked':''}>注目部分を拡大</label>`;
+  bar.innerHTML=h;
+}
+function renderLegend(){
+  const sw=(cls,style,t)=>`<span><i class="sw ${cls}" style="${style}"></i>${t}</span>`;
+  let h='';
+  if(S.tab==='replay'&&S.key){
+    const it=curT().inserts[S.i];const st=stagesOf(it)[S.s];
+    h+=sw('ring','border-color:var(--ink)','挿入する点');
+    if(st.part==='greedy')h+=sw('','background:var(--hit)','たどった点（数字は順番）')+sw('ring','border-color:var(--hit)','距離を計算した点')+sw('ring','border-color:var(--ink)','止まった点＝次の入口');
+    else if(st.part==='search')h+=sw('','background:var(--hit)','展開した点（数字は順番）')+sw('ring','border-color:var(--hit)','距離を計算した点')+sw('ring','border-color:var(--seed)','見つかった候補');
+    else if(st.part==='link')h+=sw('','background:var(--seed)','選ばれなかった候補')+sw('ln','background:var(--ink)','選んだ近傍への辺')+sw('ring','border-color:var(--trail)','辺を選び直した点')+sw('dash','border-color:var(--cut)','切られた辺');
+    h+=sw('','background:var(--a);opacity:.5','part1（丸）')+sw('sq','background:var(--b);opacity:.5','part2（四角）');
+  }else if(S.tab==='query'){
+    h+=sw('ring','border-color:var(--ink)','クエリ')+sw('','background:var(--hit)','展開した点（数字は順番）')+sw('ring','border-color:var(--hit)','距離を計算した点')+sw('ring','border-color:var(--seed)','結果のうち正解')+sw('ring','border-color:var(--cut);border-style:dashed','取りこぼした正解');
+  }else h=sw('ln','background:var(--ink)','全体構築')+sw('ln','background:var(--trail)','SIGM');
+  $('#legend').innerHTML=h;
+}
+function renderEmpty(c){
+  clear(c);
+  $('#side').querySelectorAll('section,details').forEach(s=>s.hidden=true);
+  $('#cmpOut').hidden=false;
+  $('#cmpOut').innerHTML=`<div class="empty">トレースがまだありません。miyazaki フォルダで次のように実行すると、<code>visual/data/</code> にトレースができ、このページを開き直すと読み込まれます。<br><code>g++ -std=c++17 -O3 -o src/build_full src/build_full.cpp</code><br><code>g++ -std=c++17 -O3 -o src/build_sigm src/build_sigm.cpp</code><br><code>src/build_full --dataset SIFT --split random --limit 1000</code><br><code>src/build_sigm --dataset SIFT --split random --limit 1000</code><br>または、上の「別のトレースを読み込む」から .js ファイルを選んでください。</div>`;
+}
+function renderAll(){
+  sizeCanvas();const c=COL();renderChips();
+  if(!S.key){renderEmpty(c);return}
+  const t=S.tab;
+  for(const id of['p-replay','p-now','p-replay-info','p-replay-chart'])$('#'+id).hidden=t!=='replay';
+  for(const id of['p-query','p-query-now','p-query-info'])$('#'+id).hidden=t!=='query';
+  $('#p-cmp').hidden=t!=='cmp';$('#cmpOut').hidden=t!=='cmp';
+  if(t==='replay'){renderReplay(c);renderReplayPanel()}
+  else if(t==='query'){renderQuery(c);renderQueryPanel()}
+  else{renderCmp(c);renderCmpPanel()}
+  renderLayerbar();renderLegend();
+}
+function setTab(t){stopTimer();S.tab=t;document.querySelectorAll('.tabs button').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.tab===t)));
+  if(t==='replay'&&S.key)setInsert(S.i,S.s);
+  if(t==='query'&&S.key){S.qs=0;S.view=curT().qtraces[S.q].L[0].l}
+  renderAll()}
+
+// ---------- イベント ----------
+document.querySelectorAll('.tabs button').forEach(b=>b.addEventListener('click',()=>setTab(b.dataset.tab)));
+$('#tchips').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;stopTimer();S.key=b.dataset.key;S.q=0;S.qs=0;setInsert(Math.min(S.i,curT().inserts.length-1),0);if(S.tab==='query')S.view=curT().qtraces[0].L[0].l;renderAll()});
+$('#layerbar').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;S.view=+b.dataset.layer;renderAll()});
+$('#layerbar').addEventListener('change',e=>{if(e.target.id==='zoomChk'){S.zoom=e.target.checked;renderAll()}});
+$('#stageList').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;stopTimer();setInsert(S.i,+b.dataset.stage);renderAll()});
+$('#p-replay-chart').addEventListener('toggle',()=>{if($('#p-replay-chart').open)drawMini()});
+$('#tl').addEventListener('input',e=>{stopTimer();setInsert(+e.target.value,0);renderAll()});
+$('#bPrev').addEventListener('click',()=>{stopTimer();setInsert(S.i-1,0);renderAll()});
+$('#bNext').addEventListener('click',()=>{stopTimer();setInsert(S.i+1,0);renderAll()});
+$('#bStep').addEventListener('click',()=>{stopTimer();step();renderAll()});
+$('#bPlay').addEventListener('click',()=>{play();renderAll()});
+$('#bPhase').addEventListener('click',()=>{stopTimer();const T=curT();setInsert(T.phases[1].start,0);renderAll()});
+$('#bBig').addEventListener('click',()=>{stopTimer();const T=curT();let bi=0;T.inserts.forEach((x,k)=>{if(x.d>T.inserts[bi].d)bi=k});setInsert(bi,0);renderAll()});
+$('#qsel').addEventListener('change',e=>{S.q=+e.target.value;S.qs=0;S.view=curT().qtraces[S.q].L[0].l;renderAll()});
+$('#qStep').addEventListener('click',()=>{const qt=curT().qtraces[S.q];if(S.qs<qt.L.length-1){S.qs++;S.view=qt.L[S.qs].l}renderAll()});
+$('#qAll').addEventListener('click',()=>{const qt=curT().qtraces[S.q];S.qs=qt.L.length-1;S.view=0;renderAll()});
+$('#fileIn').addEventListener('change',async e=>{
+  for(const f of e.target.files){
+    try{const t=await f.text();const a=t.indexOf('{'),b=t.lastIndexOf('}');register(JSON.parse(t.slice(a,b+1)),f.name);showMsg(`${esc(f.name)} を読み込みました`)}
+    catch(err){showMsg(`${esc(f.name)} を読み込めませんでした（${esc(err.message)}）`,true)}
+  }
+  if(S.key)setInsert(S.i,0);renderAll();
+});
+document.addEventListener('keydown',e=>{if(S.tab!=='replay'||!S.key||e.target.closest('input,select'))return;if(e.key==='ArrowRight'){stopTimer();step();renderAll();e.preventDefault()}else if(e.key==='ArrowLeft'){stopTimer();setInsert(S.i-1,0);renderAll();e.preventDefault()}});
+window.addEventListener('resize',renderAll);
+if(window.matchMedia)window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',renderAll);
+new MutationObserver(renderAll).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+
+for(const k of Object.keys(window.HNSW_TRACES))register(window.HNSW_TRACES[k],k);
+if(TRACES.full)S.key='full';
+if(S.key){const T=curT();setInsert(Math.min(T.inserts.length-1,Math.floor(T.inserts.length*0.6)),0)}
+renderAll();
+if(document.fonts&&document.fonts.ready)document.fonts.ready.then(renderAll);
+</script>
+</body>
+</html>
