@@ -1,23 +1,22 @@
 # HNSW グラフのマージ実験
 
-2つの HNSW グラフをマージする手法を、全データから作ったグラフと比べる実験です。今は全体構築と SIGM（Simple Insertion Graph Merge）を実装しています。NGM・IGTM・CGTM は今後追加します。SIGM は、大きい方のグラフにもう一方の点を1点ずつ挿入する方法です。
+2つの HNSW グラフをマージする手法を、全データから作ったグラフと比べる実験です。今は全体構築と SIGM を実装しています。NGM・IGTM は今後追加します。
 
-参考: Ponomarenko, [Three Algorithms for Merging Hierarchical Navigable Small World Graphs](https://arxiv.org/abs/2505.16064) (2025)
 
-## 構成
+## フォルダ構成
 
 | パス | 内容 |
 |---|---|
 | `src/hnsw_core.hpp` | HNSW 本体、データ読み込み、評価、CSV とトレースの書き出し |
 | `src/build_full.cpp` | 全体構築：part1 ∪ part2 を空のグラフから挿入する |
 | `src/build_sigm.cpp` | SIGM |
-| `src/hnsw.py`, `src/hnsw.cpp` | 教育用の最小実装（両者の出力は完全に一致） |
-| `visual/trace.html` | 挿入・検索の様子を1ステップずつ再生するビジュアライザ |
+| `src/hnsw.py`, `src/hnsw.cpp` | 教育用の最小実装（両者の出力は一致） |
+| `visual/trace.html` | 挿入・検索の様子のステップを再生するビジュアライザ（未実装） |
 | `results/` | 実験結果の CSV |
 
 ## データ
 
-SIFT1M（128 次元）と GIST1M（960 次元）を、それぞれ2通りに 50 万本ずつ分けたもの（`random`：一様ランダム、`gauss`：分布に偏りあり）を使います。データは再配布しないのでリポジトリには入っていません。`kenpro 2/<random|gauss>/<SIFT|GIST>/` に置いてください。
+データは再配布しないのでリポジトリには入っていません。`kenpro 2/<random|gauss>/<SIFT|GIST>/` に置いてください。
 
 ## 使い方
 
