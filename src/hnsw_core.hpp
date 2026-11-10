@@ -484,7 +484,7 @@ private:
 // ---------------------------------------------------------------
 struct Options {
     std::string method;  // "full" または "sigm"（プログラムが決める）
-    std::string data_dir = "kenpro 2", dataset = "SIFT", split = "random", out, trace;
+    std::string data_dir = "kenpro", dataset = "SIFT", split = "random", out, trace;
     std::string runs = "results/sub_runs.csv";  // 実行ごとに追記する一覧
     int M = 16, ef_construction = 32, sigm_ef = 32, k = 5, queries = 100, query_traces = 20;
     uint32_t seed = 1;
@@ -507,7 +507,7 @@ static void usage(const std::string& method) {
         "  --k N                    recall@k の k（既定 5）\n"
         "  --L a,b,c                検索時の ef（既定 32,40,50,64,72）\n"
         "  --seed N                 乱数の種（既定 1。hnsw_merge と同じ値なら同じグラフになる）\n"
-        "  --data DIR               データのフォルダ（既定 \"kenpro 2\"）\n"
+        "  --data DIR               データのフォルダ（既定 \"kenpro\"）\n"
         "  --out PATH               この実行の CSV（既定 results/sub_<dataset>_<split>_%s.csv、毎回上書き）\n"
         "  --runs PATH              全実行の一覧 CSV（既定 results/sub_runs.csv、毎回1行ずつ追記）\n"
         "  --trace PATH             トレースの出力先（既定 visual/data/trace_%s.js）\n"
