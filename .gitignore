@@ -5,6 +5,7 @@ kenpro 2/
 # ビルド成果物
 src/build_full
 src/build_sigm
+src/build_ngm
 src/hnsw
 src/hnsw_merge
 *.o

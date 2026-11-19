@@ -13,6 +13,7 @@
 #include "hnsw_core.hpp"
 
 int main(int argc, char** argv) {
+    // 1. コマンドライン引数から実験の設定を作る
     Options o = parse_args(argc, argv, "full");
     Experiment ex = setup(o);
 

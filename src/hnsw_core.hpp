@@ -50,9 +50,7 @@ static double now_sec() {
     return duration<double>(steady_clock::now().time_since_epoch()).count();
 }
 
-// ---------------------------------------------------------------
-// Python の random.Random と同じ乱数列
-// ---------------------------------------------------------------
+// 乱数列
 class PyRandom {
 public:
     explicit PyRandom(uint32_t seed) {
@@ -137,16 +135,14 @@ private:
     }
 };
 
-// ---------------------------------------------------------------
 // データ: n 本の dim 次元ベクトルを1本の配列に並べて持つ
-// ---------------------------------------------------------------
 struct Dataset {
     size_t n = 0, dim = 0;
     std::vector<Scalar> x;
     const Scalar* operator[](size_t i) const { return x.data() + i * dim; }
 };
 
-// 2点間の距離の2乗。16 レーンに分けて足すと、-ffast-math なしでも SIMD 化される。
+// 2点間の距離の2乗
 static inline Scalar dist2(const Scalar* a, const Scalar* b, size_t n) {
     constexpr size_t L = 16;
     Scalar lane[L] = {};
@@ -263,13 +259,11 @@ struct Tracer {
     std::vector<InsertTrace> inserts;
 };
 
-// ---------------------------------------------------------------
-// HNSW 本体（hnsw_merge.cpp の class HNSW と同じ処理に、記録用のフックを足したもの）
-// ---------------------------------------------------------------
+// HNSW 
 class HNSW {
 public:
     const Dataset& data;
-    int M;                    // 1ノードの最大次数（Layer 0 は 2*M）
+    int M;                    // 1ノードの最大次数
     int ef_construction;
     double mL;                // レベル抽選の係数
     PyRandom rng;
@@ -278,7 +272,7 @@ public:
     std::vector<std::vector<std::vector<int>>> graph;  // ノード番号 -> [層ごとの隣接リスト]
     int entry_point = -1;     // 探索の入口（最上層にいるノード）
     int max_level = -1;
-    mutable uint64_t n_dist = 0;  // 距離計算の回数（論文の評価指標）
+    mutable uint64_t n_dist = 0;  // 距離計算の回数
     Tracer* tracer = nullptr;     // 設定すると insert の挙動を記録する
 
     HNSW(const Dataset& data_, int M_, int ef_construction_, uint32_t seed)
@@ -286,7 +280,7 @@ public:
           mL(1.0 / std::log((double)M_)), rng(seed),
           levels(data_.n, -1), graph(data_.n), visited_(data_.n, 0) {}
 
-    // 中核: 1つの層の中を探索する（C = 候補の最小ヒープ、W = 距離の符号反転で最大ヒープ化）
+    // 1つの層の中を探索する（C = 候補の最小ヒープ、W = 距離の符号反転で最大ヒープ化）
     // lt を渡すと、取り出したノードと距離を計算したノードを記録する
     std::vector<DistNode> search_layer(const Scalar* q, int entry, int ef, int layer,
                                        LayerTrace* lt = nullptr) const {
@@ -479,14 +473,26 @@ private:
     int max_degree(int layer) const { return layer == 0 ? 2 * M : M; }
 };
 
-// ---------------------------------------------------------------
-// 実験の設定（build_full と build_sigm で共通）
-// ---------------------------------------------------------------
+// 最上層から target 層まで降りて、その層で近い k 件を返す（target 層で止まる search）。
+// 上の層では ef=upper_ef で探して一番近い1点を次の入口にし、target 層では max(ef, k) 件を持って探す。
+// グラフが target 層まで無ければ空を返す。NGM が相手のグラフで近い点を探すのに使う。
+static inline std::vector<int> search_to_layer(const HNSW& g, const Scalar* q, int k, int ef, int target, int upper_ef) {
+    if (g.entry_point < 0 || target > g.max_level) return {};
+    int ep = g.entry_point;
+    for (int layer = g.max_level; layer > target; layer--)
+        ep = g.search_layer(q, ep, upper_ef, layer)[0].second;
+    auto W = g.search_layer(q, ep, std::max(ef, k), target);
+    std::vector<int> out;
+    for (int i = 0; i < k && i < (int)W.size(); i++) out.push_back(W[i].second);
+    return out;
+}
+
+// 実験の設定オプション
 struct Options {
-    std::string method;  // "full" または "sigm"（プログラムが決める）
+    std::string method;  // "full"・"sigm"・"ngm"
     std::string data_dir = "kenpro", dataset = "SIFT", split = "random", out, trace;
     std::string runs = "results/sub_runs.csv";  // 実行ごとに追記する一覧
-    int M = 16, ef_construction = 32, sigm_ef = 32, k = 5, queries = 100, query_traces = 20;
+    int M = 16, ef_construction = 32, sigm_ef = 32, ngm_ef = 20, k = 5, queries = 100, query_traces = 20;
     uint32_t seed = 1;
     size_t limit = 1000;          // 各ファイルの先頭から読む本数
     bool search_detail = true;
@@ -510,19 +516,23 @@ static void usage(const std::string& method) {
         "  --data DIR               データのフォルダ（既定 \"kenpro\"）\n"
         "  --out PATH               この実行の CSV（既定 results/sub_<dataset>_<split>_%s.csv、毎回上書き）\n"
         "  --runs PATH              全実行の一覧 CSV（既定 results/sub_runs.csv、毎回1行ずつ追記）\n"
-        "  --trace PATH             トレースの出力先（既定 visual/data/trace_%s.js）\n"
-        "  --query-traces N         検索の様子を記録するクエリの数（既定 20）\n"
-        "  --no-search-detail       挿入時の探索経路を記録しない（トレースが小さくなる）\n"
-        "  --no-trace               トレースを書かない\n",
+        "%s",
         method.c_str(),
-        method == "sigm" ? "  --sigm-efc N             SIGM で後から挿入するときの ef（既定 32）\n" : "",
-        method.c_str(), method.c_str());
+        method == "sigm" ? "  --sigm-efc N             SIGM で後から挿入するときの ef（既定 32）\n"
+        : method == "ngm" ? "  --ngm-ef N               NGM で相手のグラフを探すときの ef（既定 20）\n" : "",
+        method.c_str(),
+        method == "ngm" ? ""  // NGM は挿入をしないのでトレースを書かない
+        : ("  --trace PATH             トレースの出力先（既定 visual/data/trace_" + method + ".js）\n"
+           "  --query-traces N         検索の様子を記録するクエリの数（既定 20）\n"
+           "  --no-search-detail       挿入時の探索経路を記録しない（トレースが小さくなる）\n"
+           "  --no-trace               トレースを書かない\n").c_str());
     std::exit(2);
 }
 
 static Options parse_args(int argc, char** argv, const std::string& method) {
     Options o;
     o.method = method;
+    o.write_trace = method != "ngm";
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         auto val = [&]() -> std::string {
@@ -542,6 +552,7 @@ static Options parse_args(int argc, char** argv, const std::string& method) {
         else if (a == "--M") o.M = (int)ival();
         else if (a == "--efc") o.ef_construction = (int)ival();
         else if (a == "--sigm-efc" && method == "sigm") o.sigm_ef = (int)ival();
+        else if (a == "--ngm-ef" && method == "ngm") o.ngm_ef = (int)ival();
         else if (a == "--k") o.k = (int)ival();
         else if (a == "--queries") o.queries = (int)ival();
         else if (a == "--query-traces") o.query_traces = (int)ival();
@@ -549,9 +560,9 @@ static Options parse_args(int argc, char** argv, const std::string& method) {
         else if (a == "--limit") o.limit = (size_t)ival();
         else if (a == "--out") o.out = val();
         else if (a == "--runs") o.runs = val();
-        else if (a == "--trace") o.trace = val();
-        else if (a == "--no-search-detail") o.search_detail = false;
-        else if (a == "--no-trace") o.write_trace = false;
+        else if (a == "--trace" && method != "ngm") o.trace = val();
+        else if (a == "--no-search-detail" && method != "ngm") o.search_detail = false;
+        else if (a == "--no-trace" && method != "ngm") o.write_trace = false;
         else if (a == "--L") {
             o.Ls.clear();
             std::string s = val();
@@ -713,7 +724,7 @@ static std::vector<EvalRow> evaluate(const HNSW& h, const Experiment& ex) {
 }
 
 // 最終グラフでの検索の様子を、先頭のいくつかのクエリについて記録する（L は最大のもの）
-static std::vector<QueryTrace> trace_queries(const HNSW& h, const Experiment& ex) {
+static inline std::vector<QueryTrace> trace_queries(const HNSW& h, const Experiment& ex) {
     std::vector<QueryTrace> out;
     int L = *std::max_element(ex.o.Ls.begin(), ex.o.Ls.end());
     size_t nq = std::min<size_t>(ex.queries.n, (size_t)ex.o.query_traces);
@@ -735,17 +746,27 @@ struct Phase { std::string name; size_t start = 0, end = 0; int efc = 0; uint64_
 
 // 1行 = 1つの L。パラメータ・グラフの状態・実行時間・評価指標をすべて並べる。
 // --out はこの実行だけ（上書き）、--runs は全実行の一覧（追記）に同じ行を書く。
+// phases の最後がマージ段階、それより前はすべて土台（NGM は土台 A と B の2つ）。
+//   merge_ef        : SIGM は挿入時の efC、NGM は相手のグラフを探すときの ef、full は 0
+//   base_points     : 土台に挿入した点の数（full は全点）
+//   inserted_points : マージ段階で扱った点の数（SIGM は挿入した点、NGM は近傍を作り直した点）
 static const char* CSV_HEADER =
-    "time,dataset,split,method,limit,n,dim,n_query,M,efc,sigm_efc,seed,"
+    "time,dataset,split,method,limit,n,dim,n_query,M,efc,merge_ef,seed,"
     "layers,avg_deg0,reached,base_points,inserted_points,base_dist,base_sec,merge_dist,merge_sec,"
     "total_dist,total_sec,k,L,recall,qps,dist_per_query\n";
 
 static void write_csv(const Experiment& ex, const std::vector<Phase>& phases, const std::vector<EvalRow>& rows,
                       const GraphStats& gs) {
     const Options& o = ex.o;
-    const Phase& b = phases.front();
     const Phase none{};
-    const Phase& m = phases.size() > 1 ? phases.back() : none;  // SIGM の「挿入」段階
+    const Phase& m = phases.size() > 1 ? phases.back() : none;  // マージ段階
+    Phase b;  // 土台（マージ段階より前をすべて足す）
+    for (size_t i = 0; i + (phases.size() > 1 ? 1 : 0) < phases.size(); i++) {
+        b.end += phases[i].end - phases[i].start;
+        b.dist += phases[i].dist;
+        b.sec += phases[i].sec;
+    }
+    const int merge_ef = o.method == "sigm" ? o.sigm_ef : o.method == "ngm" ? o.ngm_ef : 0;
     char stamp[32];
     std::time_t now = std::time(nullptr);
     std::strftime(stamp, sizeof stamp, "%Y-%m-%d %H:%M:%S", std::localtime(&now));
@@ -753,7 +774,7 @@ static void write_csv(const Experiment& ex, const std::vector<Phase>& phases, co
         for (const auto& r : rows)
             std::fprintf(f, "%s,%s,%s,%s,%zu,%zu,%zu,%zu,%d,%d,%d,%u,%d,%.4f,%zu,%zu,%zu,%llu,%.4f,%llu,%.4f,%llu,%.4f,%d,%d,%.5f,%.1f,%.1f\n",
                          stamp, o.dataset.c_str(), o.split.c_str(), o.method.c_str(), o.limit, ex.order.size(),
-                         ex.data.dim, ex.queries.n, o.M, o.ef_construction, o.method == "sigm" ? o.sigm_ef : 0, o.seed,
+                         ex.data.dim, ex.queries.n, o.M, o.ef_construction, merge_ef, o.seed,
                          gs.layers, gs.avg_deg0, gs.reached, b.end - b.start, m.end - m.start,
                          (unsigned long long)b.dist, b.sec, (unsigned long long)m.dist, m.sec,
                          (unsigned long long)(b.dist + m.dist), b.sec + m.sec, o.k, r.L, r.recall, r.qps, r.dpq);
@@ -786,7 +807,8 @@ static void write_csv(const Experiment& ex, const std::vector<Phase>& phases, co
     // 画面にもまとめを出す
     std::printf("\n== まとめ（%s, %s/%s, 各 part 先頭 %zu 本, M=%d, efC=%d%s）==\n", o.method.c_str(),
                 o.dataset.c_str(), o.split.c_str(), o.limit, o.M, o.ef_construction,
-                o.method == "sigm" ? (", 挿入 efC=" + std::to_string(o.sigm_ef)).c_str() : "");
+                o.method == "sigm"  ? (", 挿入 efC=" + std::to_string(o.sigm_ef)).c_str()
+                : o.method == "ngm" ? (", 探索 ef=" + std::to_string(o.ngm_ef)).c_str() : "");
     for (const auto& p : phases)
         std::printf("  %-16s %6zu 点  %8.3f 秒  距離計算 %llu 回\n", p.name.c_str(), p.end - p.start, p.sec,
                     (unsigned long long)p.dist);
@@ -890,7 +912,7 @@ private:
     FILE* f_;
 };
 
-static void write_trace(const Experiment& ex, const Tracer& tr, const std::vector<Phase>& phases,
+static inline void write_trace(const Experiment& ex, const Tracer& tr, const std::vector<Phase>& phases,
                         const std::vector<EvalRow>& rows, const GraphStats& gs,
                         const std::vector<QueryTrace>& qts) {
     const Options& o = ex.o;

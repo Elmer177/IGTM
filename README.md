@@ -1,6 +1,6 @@
 # HNSW グラフのマージ実験
 
-2つの HNSW グラフをマージする手法を、全データから作ったグラフと比べる実験です。今は全体構築と SIGM を実装しています。NGM・IGTM は今後追加します。
+2つの HNSW グラフをマージする手法を、全データから作ったグラフと比べる実験です。今は全体構築・SIGM・NGM を実装しています。IGTM は今後追加します。
 
 
 ## フォルダ構成
@@ -9,7 +9,8 @@
 |---|---|
 | `src/hnsw_core.hpp` | HNSW 本体、データ読み込み、評価、CSV とトレースの書き出し |
 | `src/build_full.cpp` | 全体構築：part1 ∪ part2 を空のグラフから挿入する |
-| `src/build_sigm.cpp` | SIGM |
+| `src/build_sigm.cpp` | SIGM：大きい方のグラフに、もう一方の点を挿入する |
+| `src/build_ngm.cpp` | NGM：両方のグラフを作り、各点の近傍を相手のグラフを検索して作り直す |
 | `src/hnsw.py`, `src/hnsw.cpp` | 教育用の最小実装（両者の出力は一致） |
 | `visual/trace.html` | 挿入・検索の様子のステップを再生するビジュアライザ（未実装） |
 | `results/` | 実験結果の CSV |
@@ -25,12 +26,14 @@
 ```sh
 clang++ -std=c++17 -O3 -o src/build_full src/build_full.cpp
 clang++ -std=c++17 -O3 -o src/build_sigm src/build_sigm.cpp
+clang++ -std=c++17 -O3 -o src/build_ngm src/build_ngm.cpp
 
 src/build_full --dataset SIFT --split random --limit 1000
 src/build_sigm --dataset SIFT --split random --limit 1000
+src/build_ngm  --dataset SIFT --split random --limit 1000
 ```
 
-`--limit N` で各 part の先頭 N 本だけを使います。結果は `results/sub_*.csv` に、トレースは `visual/data/trace_*.js` に出力されます。`visual/trace.html` をブラウザで開くと再生できます。全オプションは `--help` で表示されます。
+`--limit N` で各 part の先頭 N 本だけを使います。結果は `results/sub_*.csv` に、トレースは `visual/data/trace_*.js` に出力されます（NGM はトレースを出しません）。`visual/trace.html` をブラウザで開くと再生できます。全オプションは `--help` で表示されます。
 
 ## 実験条件
 
